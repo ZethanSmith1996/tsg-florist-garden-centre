@@ -1,1 +1,1 @@
-export const config = Object.freeze({url:'https://xdtexbnjnjrvyjcvajhh.supabase.co',publishableKey:'sb_publishable_2Y9OkKCFktkOiwgqO0iD3A_VNkhOLZe',environment:'development',version:'0.4.1.6.3.4.3'});
+export const config = Object.freeze({url:'https://xdtexbnjnjrvyjcvajhh.supabase.co',publishableKey:'sb_publishable_2Y9OkKCFktkOiwgqO0iD3A_VNkhOLZe',environment:'development',version:'0.4.1.6.3.4.4'});
