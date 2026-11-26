@@ -3,6 +3,8 @@ const $ = id => document.getElementById(id);
 const status = message => { $('status').textContent = message; };
 let client, createClient, factorId, busy=false;
 let deviceId, deviceToken, staffId;
+let crossId, crossToken;
+const crossSessions=[];
 const sessions=[];
 function clearSessions(){sessions.length=0;$('savedSession').replaceChildren();}
 function freshClient(){return createClient(config.url,config.publishableKey,{auth:{persistSession:false,autoRefreshToken:false,detectSessionInUrl:false}});}
@@ -28,7 +30,7 @@ try{
  $('login').addEventListener('submit',e=>{e.preventDefault();locked(async()=>{status('Signing in…');try{const {data,error}=await client.auth.signInWithPassword({email:$('email').value.trim(),password:$('password').value});if(error||!data.session){status('Sign-in unsuccessful. Check your credentials or try again later.');return;}await inspect(data.session);}finally{$('password').value='';}});});
  $('setup').addEventListener('click',()=>locked(async()=>{status('Creating authenticator…');const {data,error}=await client.auth.mfa.enroll({factorType:'totp',friendlyName:'TSG Management',issuer:'TSG Florist Garden Centre'});if(error||!data?.totp){status('Authenticator setup unsuccessful. If setup was previously abandoned, contact the owner before retrying.');return;}factorId=data.id;const qr=data.totp.qr_code;if(typeof qr==='string'&&qr.startsWith('data:image/svg+xml')){$('qr').src=qr;$('qr').hidden=false;}$('secret').textContent=data.totp.secret;$('manual').hidden=false;$('setup').hidden=true;$('verify').hidden=false;$('mfaHelp').textContent='Scan the QR code or enter the setup key manually, then enter the six-digit code.';status('Waiting for authenticator code.');}));
  $('verify').addEventListener('submit',e=>{e.preventDefault();locked(async()=>{if(!factorId)return;const code=$('otp').value;$('otp').value='';if(!/^\d{6}$/.test(code))return;status('Verifying code…');const {data,error}=await client.auth.mfa.challengeAndVerify({factorId,code});if(error){status('Code not verified. Enter a fresh code and retry.');return;}if(!data?.access_token){status('Verification session unavailable. Sign out and retry.');return;}await inspect(data);});});
- $('logout').addEventListener('click',()=>locked(async()=>{if(deviceId){status('Revoke the test device before signing out.');return;} $('testing').hidden=true;staffId=null;clearSessions();$('pin').value='';clearMfa();try{const {error}=await client.auth.signOut({scope:'local'});if(error)throw error;status('Signed out.');}catch{status('Server sign-out could not be confirmed. Local session discarded.');}finally{client=freshClient();$('session').hidden=true;$('login').hidden=false;$('sessionDetail').textContent='';$('sessionTitle').textContent='Session';}}));
+ $('logout').addEventListener('click',()=>locked(async()=>{if(deviceId||crossId){status('Revoke both test devices before signing out.');return;} $('testing').hidden=true;staffId=null;clearSessions();$('pin').value='';clearMfa();try{const {error}=await client.auth.signOut({scope:'local'});if(error)throw error;status('Signed out.');}catch{status('Server sign-out could not be confirmed. Local session discarded.');}finally{client=freshClient();$('session').hidden=true;$('login').hidden=false;$('sessionDetail').textContent='';$('sessionTitle').textContent='Session';}}));
 }catch{status('Login library could not load. Check your internet connection and reload.');}
 
 const report = msg => { $('results').textContent=msg; };
@@ -72,4 +74,52 @@ testAction('parallelRun',async()=>{
   }catch{return `Request ${String.fromCharCode(65+i)}: transport or response error (${Math.round(performance.now()-start)} ms); outcome unknown. Check database before retrying.`;}
  }));
  output.textContent=results.join('\n');
+});
+
+// Independent second device; all credentials remain in memory.
+const crossReport = msg => { $('crossResults').textContent=msg; };
+function retainCross(r, second){
+ if(!r.ok)return '';
+ if(typeof r.sessionToken!=='string'||!/^[0-9a-f]{64}$/.test(r.sessionToken)||typeof r.sessionId!=='string')return ' | Missing session credentials';
+ const store=second?crossSessions:sessions, select=$(second?'crossSaved':'savedSession');
+ const index=store.push({id:r.sessionId,token:r.sessionToken})-1;
+ select.add(new Option(`Session ${index+1} — ${r.sessionId}`,String(index)));select.value=String(index);
+ return ` | Session ${index+1} — ${r.sessionId}`;
+}
+async function crossRequest(second,pin){
+ const start=performance.now(), name=second?'B':'A';
+ try{
+  const r=await endpoint('tsg-staff-pin-auth',{staff_id:staffId,device_id:second?crossId:deviceId,device_token:second?crossToken:deviceToken,pin});
+  return `Device ${name}: HTTP ${r.http} — ${r.status} (${Math.round(performance.now()-start)} ms)`+retainCross(r,second);
+ }catch{return `Device ${name}: transport or response error; outcome unknown. Check database before retrying.`;}
+}
+testAction('crossDevice',async()=>{
+ if(!staffId||!deviceId||crossId){crossReport('Authorise Device A first; revoke existing Device B before replacing it.');return;}
+ const token=hex(crypto.getRandomValues(new Uint8Array(32)));
+ const {data,error}=await client.rpc('tsg_authorise_device',{p_device_name:'TSG Development Cross-Device B',p_device_type:'desktop',p_device_token_hash:await hash(token)});
+ if(error||typeof data!=='string'){crossReport('Device B authorisation failed.');return;}
+ crossId=data;crossToken=token;$('crossIdentity').textContent='Device B ID: '+crossId;crossReport('Device B authorised. Device A ID: '+deviceId);
+});
+testAction('crossRun',async()=>{
+ const a=$('crossA').value,b=$('crossB').value;$('crossA').value='';$('crossB').value='';
+ if(!staffId||!deviceId||!crossId||!/^\d{4}$/.test(a)||!/^\d{4}$/.test(b)){crossReport('Authorise both devices and enter two four-digit PINs.');return;}
+ if(!confirm('Submit one authentication request per device simultaneously?'))return;
+ crossReport('Running cross-device requests…');crossReport((await Promise.all([crossRequest(false,a),crossRequest(true,b)])).join('\n'));
+});
+testAction('crossSingle',async()=>{
+ const b=$('crossB').value;$('crossB').value='';$('crossA').value='';
+ if(!staffId||!crossId||!/^\d{4}$/.test(b)){crossReport('Authorise Device B and enter its four-digit PIN.');return;}
+ crossReport(await crossRequest(true,b));
+});
+async function verifyCross(mismatch){
+ const select=$('crossSaved'), selected=select.value===''?null:crossSessions[Number(select.value)];
+ if(!crossId||!selected||(mismatch&&!deviceId)){crossReport('Authorise the required devices and select a Device B session.');return;}
+ const r=await endpoint('tsg-staff-session',{device_id:mismatch?deviceId:crossId,device_token:mismatch?deviceToken:crossToken,session_token:selected.token});
+ crossReport(`Device B session ${Number(select.value)+1} on Device ${mismatch?'A':'B'}: HTTP ${r.http} — ${r.status}`);
+}
+testAction('crossVerify',()=>verifyCross(false));testAction('crossMismatch',()=>verifyCross(true));
+testAction('crossRevoke',async()=>{
+ if(!crossId){crossReport('No Device B in memory.');return;}
+ const {error}=await client.rpc('tsg_revoke_device',{p_device_id:crossId});if(error){crossReport('Device B revocation failed.');return;}
+ crossId=null;crossToken=null;crossSessions.length=0;$('crossSaved').replaceChildren();$('crossIdentity').textContent='';crossReport('Device B revoked.');
 });
