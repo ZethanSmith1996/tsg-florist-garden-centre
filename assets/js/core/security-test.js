@@ -50,3 +50,26 @@ async function verifySaved(mode){const selected=sessions[Number($('savedSession'
 testAction('verifySession',()=>verifySaved('valid'));
 testAction('wrongSession',()=>verifySaved('session'));
 testAction('wrongDevice',()=>verifySaved('device'));
+
+// Bounded development-only parallel requests. No automatic retries.
+testAction('parallelRun',async()=>{
+ const a=$('parallelA').value,b=$('parallelB').value,count=Number($('parallelCount').value);
+ $('parallelA').value='';$('parallelB').value='';
+ const output=$('parallelResults');
+ if(!deviceId||!staffId||!/^\d{4}$/.test(a)||!/^\d{4}$/.test(b)||![2,3,4].includes(count)){output.textContent='Authorise a device and enter two four-digit temporary PINs.';return;}
+ if(!confirm(`Submit ${count} concurrent authentication requests? Failure counters and sessions may change.`))return;
+ output.textContent='Running parallel requests…';
+ const results=await Promise.all(Array.from({length:count},async(_,i)=>{
+  const start=performance.now();
+  try{
+   const r=await endpoint('tsg-staff-pin-auth',{staff_id:staffId,device_id:deviceId,device_token:deviceToken,pin:i===0?a:b});
+   let label='';
+   if(r.ok){
+    if(typeof r.sessionToken!=='string'||!/^[0-9a-f]{64}$/.test(r.sessionToken)||typeof r.sessionId!=='string')label=' | Missing session credentials';
+    else {const index=sessions.push({id:r.sessionId,token:r.sessionToken})-1;$('savedSession').add(new Option(`Session ${index+1} — ${r.sessionId}`,String(index)));$('savedSession').value=String(index);label=` | Session ${index+1} — ${r.sessionId}`;}
+   }
+   return `Request ${String.fromCharCode(65+i)}: HTTP ${r.http} — ${r.status} (${Math.round(performance.now()-start)} ms)${label}`;
+  }catch{return `Request ${String.fromCharCode(65+i)}: transport or response error (${Math.round(performance.now()-start)} ms); outcome unknown. Check database before retrying.`;}
+ }));
+ output.textContent=results.join('\n');
+});
